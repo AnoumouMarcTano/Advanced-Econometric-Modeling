@@ -1,0 +1,686 @@
+---
+title: "PROJET D'ÉCONOMÉTRIE AVANCÉE"
+author: "Gyldano DADJEDJI, NOUCHET Kwami, TANO Marc"
+date: "27-04-2024"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    fig_caption: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, comment=NA}
+rm(list = ls())
+knitr::opts_chunk$set(echo = TRUE, error=TRUE, echo=FALSE)
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+# Importation des librairies
+library(lmtest)
+library(stargazer)
+library(gridExtra)
+library(ggplot2)
+library(orcutt) # correction orcutt sur données temporelles
+library(tidyverse)
+library(corrplot)
+library(AER)
+library(pls)
+library(glmnet)
+library(caret)
+
+# Package DML
+library(DoubleML)
+library(mlr3)
+library(mlr3learners)
+library(ggpubr)
+
+```
+
+
+# Introduction et objectifs de l’Étude
+
+
+**Le Produit Intérieur Brut** (PIB) par habitant est un indicateur économique clé qui reflète le niveau de richesse et de productivité d’une nation. Il est essentiel pour évaluer la performance économique et orienter les politiques de développement. Notre étude vise à identifier et à analyser les variables qui influencent le PIB par habitant au Japon, la cinquième plus grande économie mondiale. Nous cherchons à comprendre les facteurs sous-jacents qui contribuent à son évolution au fil du temps.
+
+# Cadre théorique et modélisation économétrique
+
+De nombreuses théories économiques éclairent les déterminants du PIB par habitant. Parmi les facteurs les plus importants, on trouve: 
+
+**L'activité économique**:  La Formation Brute de Capital Fixe (FBCF) est un indicateur des dépenses en capital qui reflète l’investissement dans les infrastructures et les biens de production. Selon la théorie de l’investissement, ces dépenses sont cruciales pour la croissance économique.
+
+**La performance environnementale** : Les émissions de CO2 par habitant (CO2) sont intégrées pour évaluer l’impact de la performance environnementale sur l’économie. Les coûts liés à la pollution et au changement climatique peuvent affecter la santé publique et la productivité, influençant ainsi le PIB.
+
+**L'ouverture au commerce** : L’ouverture au commerce international (Trade) est un facteur déterminant de l’intégration économique et de la spécialisation, ce qui peut entraîner des gains d’efficacité et influencer le PIB.
+
+**Des facteurs endogènes** : Le PIB de l’année précédente  est considéré comme un reflet de l’accumulation de capital et du progrès technologique, des éléments centraux de la théorie de la croissance endogène.
+
+
+En combinant ces variables dans un modèle économétrique, nous pouvons examiner leur influence collective sur le PIB par habitant et fournir des insights pour des décisions politiques éclairées.
+
+L’équation de notre modèle économétrique est donc formulée comme suit :
+
+$$ log.GDP.per.capita =b_0+b_1*FBCF+b_2*log.CO2.per.capita +b_3*log.GDP.per.capita_{t-1}+b_4*Trade+ e $$
+
+\newpage
+
+# Collecte des données
+
+Nous avons initié notre étude en établissant une base de données à partir des informations collectées sur les sites de la Banque mondiale et de l'OCDE. Afin d'assurer une représentation plus précise des données, nous avons opté pour l'utilisation du logarithme du PIB par habitant (initialement en dollars US) ainsi que du CO2 par habitant (initialement en tonnes par habitant). L'ouverture commerciale et la formation brute de capital fixe sont exprimées en pourcentages du PIB pour une meilleure comparabilité.
+
+
+```{r, echo=FALSE, comment=NA,message=FALSE, warning=FALSE}
+# Importation
+data <- read_delim("data_jpn.csv", col_names = TRUE, skip = 2, delim = ";", show_col_types = should_show_types())
+
+# Prise des formes logarithmique pour harmoniser les échelles des variables
+data$log_GDP_per_capita <- log(data$GDP_pc)
+data$log_CO2_per_capita <- log(data$CO2_pc)
+
+# Introduction de variables utiles pour la suite
+
+data$log_GDP_per_capita_t_minus_1 <- log(data$lag_GDP_pc)
+data$log_GDP_per_capita_t_minus_2 <- log(lag(data$lag_GDP_pc, 2))
+data$log_GDP_per_capita_t_minus_3 <- log(lag(data$lag_GDP_pc, 3))
+
+# Mise à jour des données
+data <- subset(data, select= -c(GDP_pc,CO2_pc, lag_GDP_pc))
+
+# Première partie
+don <- subset(data, select = c("Year", "FBCF", "Trade", "log_GDP_per_capita","log_CO2_per_capita", "log_GDP_per_capita_t_minus_1","log_GDP_per_capita_t_minus_2","log_GDP_per_capita_t_minus_3"))
+
+tibble(don)
+```
+
+# Partie 1: Etude de l'autocorrélation et de l'endogénéité
+
+## Statistiques descriptives univariées
+
+Pour approfondir notre compréhension du PIB par habitant, nous allons procéder à une analyse statistique desctriptive. Celle-ci consistera en la représentation graphique du PIB par habitant actuel et celui de l’année précédente. Cette démarche vise à identifier les tendances et les dynamiques temporelles qui caractérisent notre variable d’intérêt.
+
+```{r, fig.width=10,fig.height=3, echo=FALSE, message=FALSE, warning=FALSE}
+
+p1 <-  ggplot(don)+
+  geom_line(aes(y= log_GDP_per_capita, x=Year),color="red")+ 
+  ggtitle("Evolution du PIB par habitant en log") + theme(plot.title = element_text(hjust = 0.5))
+  
+p2 <-  ggplot(don, aes(y=log_GDP_per_capita_t_minus_1, x=Year))+
+  geom_line(color="blue")+
+  ggtitle("Evolution du lag du PIB par habitant en log") + theme(plot.title = element_text(hjust = 0.5))
+
+# grille unique pour les graphes
+grid.arrange(p1, p2, ncol=2)
+```
+
+L'anlyse de l'évolution du PIB par habitant montre une relation forte et systématique entre ces deux variables, ce qui peut suggérer la présence d'une endogénéité dans notre modèle économétrique due à la simultanéité de ces deux variables. Cependant, pour établir l’endogénéité avec certitude, il est nécessaire d’effectuer des tests statistiques plus rigoureux, que nous aborderons plus tard dans le projet.
+
+## Statistiques descriptives bivariées
+
+### Nuages des variables
+
+Pour en apprendre davantage sur le type de lien qui existe entre notre variable endogène et nos variables  exogènes, nous utilisons une réprésentation graphique de nuage de points.
+
+```{r, warning=FALSE, message=FALSE, fig.width=10, fig.height=6, echo=FALSE}
+
+plot1 <- ggplot(data=don, aes(y = log_GDP_per_capita, x = log_GDP_per_capita_t_minus_1)) +
+geom_point() + ggtitle("Evolution du PIB par habitant en fonction de son \nlag décalé d'un an en log") + theme(plot.title = element_text(hjust = 0.5)) +geom_smooth(method = "loess", color = "red")
+
+plot2 <- ggplot(data=don, aes(y = log_GDP_per_capita, x = log_CO2_per_capita)) +
+geom_point() + ggtitle("Evolution du PIB par habitanten fonction du CO2 \nen log")  +   theme(plot.title = element_text(hjust = 0.5)) + geom_smooth(method = "loess", color = "red")
+
+plot3 <- ggplot(data=don, aes(y =log_GDP_per_capita, x = FBCF)) +
+geom_point() + ggtitle("Evolution du log du PIB par habitant en fonction \nde la force brute du capital fixe")  +  theme(plot.title = element_text(hjust = 0.5)) + geom_smooth(method = "loess", color = "red")
+
+plot4 <- ggplot(data=don, aes(y = log_GDP_per_capita, x = Trade)) +
+geom_point() + ggtitle("Evolution du log du PIB par habitant en fonction \nde l'ouverture commerciale")  + geom_smooth(method = "loess", color = "red") +  theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(plot1, plot2, plot3, plot4, nrow = 2)
+```
+L’examen des graphiques suggère que le modèle linéaire est le plus adapté pour décrire la relation entre les variables explicatives et le PIB par habitant. Cette observation constitue une étape préliminaire essentielle, nous permettant de saisir la nature des liens entre les variables, étape nécessaire pour poursuivre au mieux la réalisation du modèle économétrique.
+
+
+\newpage
+
+
+### Matrice de corrélation
+
+On représente ensuite les corrélations entre les différentes variables.
+
+```{r, fig.width=5, fig.height=5}
+corr_M <- cor(don[-1,2:6])
+corrplot::corrplot(corr_M, method = 'number', type= "upper")
+```
+
+Notre analyse révèle une corrélation significative entre le PIB par habitant actuel et celui de l’année précédente, ainsi qu’entre le PIB par habitant et d’autres variables explicatives telles que la Formation Brute de Capital Fixe (FBCF) et les émissions de CO2 par habitant. Cette forte interdépendance souligne l’importance d’une étude approfondie du PIB par habitant décalé d’une année pour mieux comprendre ces dynamiques et affiner notre modèle économétrique dans la suite de notre projet.
+
+
+## Spécification du modèle
+
+Pour expliquer le PIB par habitant, nous avons conçu un modèle économétrique initial basé sur les principes théoriques précédemment établis. Ce modèle intègre des variables clés qui sont susceptibles d’influencer le PIB par habitant, conformément à notre cadre théorique :
+
+$$ log.GDP.per.capita = b_0+b_1*FBCF+b_2*log.CO2.per.capita +b_3*log.GDP.per.capita_{t-1}+b_4*Trade+ e $$
+
+\newpage
+
+```{r, comment=NA}
+model <- lm(log_GDP_per_capita ~Trade+FBCF+log_CO2_per_capita + log_GDP_per_capita_t_minus_1, data=don[,2:6])
+summary(model)
+```
+
+Une synthèse de ce modèle révèle que seul le PIB décalé d’une année est statistiquement significatif, accompagné d’un R² ajusté élevé. Cette situation inhabituelle peut effectivement suggérer un problème d’endogénéité. Pour investiguer davantage, il est judicieux de commencer par examiner les résidus du modèle afin de détecter d’éventuelles anomalies ou modèles qui pourraient indiquer des problèmes sous-jacents dans notre analyse économétrique.
+
+## Analyse des résidus
+
+### Histogramme des résidus et relation entre Et et Et-1
+
+```{r, echo=FALSE,  fig.width=10,fig.height=3, message=FALSE, warning=FALSE}
+
+# Histogramme des résidus
+
+pp1 <- ggplot(as.data.frame(model$residuals), aes(x=model$residuals))  + geom_histogram(aes(y=..density..),fill="tomato")+xlab("Residus") + geom_density(aes(y=..density..), color="black")+
+  ggtitle("Histogramme des résidus du modèle") +  theme(plot.title = element_text(hjust = 0.5))
+
+# Relation entre Et et Et-1
+
+
+pp2 <-ggplot(as.data.frame(model$residuals), aes(y=model$residuals, x=lag(model$residuals))) +xlab("Et") +ylab("Et-1") +geom_point()+ geom_smooth(method = "loess", color = "red") + ggtitle("Relation entre Et et Et-1") + theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(pp1, pp2, ncol=2)
+```
+
+L’analyse des résidus de notre modèle économétrique indique une relation linéaire entre Et et Et-1, qui semble former une ligne horizontale. Cela suggère l’absence d’autocorrélation des résidus, un bon indicateur de la fiabilité du modèle. Cependant, l’histogramme des résidus laisse présager que ceux-ci ne suivent pas une distribution normale.
+
+Pour confirmer ces observations, nous procéderons à des tests statistiques, tels que le test de Durbin-Watson pour l’autocorrélation et le test de Shapiro-Wilk pour la normalité, afin de vérifier les propriétés des résidus de notre modèle. 
+
+### Test de normalité des résidus de Shapiro-Wilk
+
+```{r, comment=NA,echo=FALSE}
+shapiro.test(model$residuals)
+```
+
+La p-value obtenue du test de normalité étant inférieure au seuil critique de 5%, nous rejetons l’hypothèse selon laquelle les résidus suivent une distribution normale. Cette non-normalité des résidus implique que les estimations des coefficients obtenues par la méthode des Moindres Carrés Ordinaires (MCO) pourraient être biaisées.
+
+### Test d'autocorrélation : Statistique H de Durbin Waston
+
+Notre modèle étant dynamque, nous utilisons la statistique H de Durbin Waston pour évaluer l'autocorrorélaion. On effectue d'abord  le test de durbin waston, et on a: 
+```{r, comment=NA,echo=FALSE, message=FALSE}
+library(car)
+durbinWatsonTest(model)
+```
+
+Ainsi, on déduit que:
+```{r , comment=NA}
+#(1-1.78/2)*sqrt(51/(1-(1.25*10^(-6))^2))
+```
+
+$$ Stat_{H.de.durbin}= \left(1-\frac{1.78}{2}\right) \times \sqrt{\frac{51}{1-(1.25 \times 10^{-6})^2}} = 0.7855 < 1.65 $$ 
+
+Avec une statistique inférieure à 1.65, on peut conclure qu'il n'existe pas d'autocorrélation, indiquant ainsi que les erreurs de notre modèle ne sont pas liées à une corrélation entre les observations successives, mais plutôt à une autre source d'erreur.
+
+## Etude de l'endogénéité
+
+Selon la théorie économique, le PIB par habitant et le PIB par habitant décalé d’une année peuvent en effet avoir un impact l’un sur l’autre. Cela nous permet d’étudier l’endogénéité de notre modèle économique.
+
+### Recherche d’instruments alternatifs
+
+Comme les données sont temporelles, il est possible de tester si les variables du PIB par habitant décalées dans le temps pourraient servir de bons instruments.
+
+
+```{r,comment=NA}
+library(AER)
+EQDA_2SLS = ivreg( log_GDP_per_capita ~ Trade + log_GDP_per_capita_t_minus_1 + log_CO2_per_capita  +FBCF | Trade +FBCF+ log_CO2_per_capita + log_GDP_per_capita_t_minus_2 + log_GDP_per_capita_t_minus_3 ,  data=don[-3,])
+
+summary(EQDA_2SLS,  diagnostics=TRUE)
+```
+Sous l’hypothèse nulle, les instruments sont exogènes (non corrélés aux aléas). Les tests de Sargan et d'Hausman acceptent l'hypothèse nulle, montrant ainsi que les instruments choisis sont bien exogènes et non corrélés aux aléas du PIB par habitant.
+
+\newpage
+
+### Test des instruments faibles: weak instrument
+
+```{r, comment=NA}
+our_don =na.omit(don)
+Pr_FRMC <- lm(log_GDP_per_capita_t_minus_1 ~ Trade + log_CO2_per_capita , data=our_don)
+
+Pr_FRM <- lm(log_GDP_per_capita_t_minus_1 ~ log_GDP_per_capita_t_minus_2 + log_GDP_per_capita_t_minus_3 + Trade + log_CO2_per_capita , data=our_don)
+
+anova(Pr_FRMC,Pr_FRM)
+```
+
+Le test de **weak instrument** indique que les variables **log_GDP_per_capita_t_minus_2** et **log_GDP_per_capita_t_minus_3** sont de bons instruments, car elles sont corrélées à la variable **log_GDP_per_capita_t_minus_1**.
+
+### Test d'endogénéité: Test de Hausman Wu
+
+Nous examinons ainsi l'endogénéité de notre modèle en utilisant le **test de la régression augmentée**.
+
+```{r, comment=NA, warning=FALSE}
+residu <- residuals(Pr_FRM)
+
+model_wu <-  lm(log_GDP_per_capita ~ log_GDP_per_capita_t_minus_1 + Trade + FBCF+log_CO2_per_capita + residu, data=our_don)
+summary(model_wu)
+```
+
+
+Après avoir effectué le test d'Hausman, nous constatons que les résidus ne sont pas significatifs, indiquant l'absence d'endogénéité. Cela suggère que notre modèle initial présentait une endogénéité, mais celle-ci a été corrigée suite à l'introduction des variables instrumentales. Nous pouvons alors estimer les coefficients à l'aide de l'estimateur des variables instrumentales.
+
+
+# Partie 2: Analyse de de la multicolinéarité
+
+```{r}
+# Data deuxième partie
+don2 <- subset(data, select=-c(Year,log_GDP_per_capita_t_minus_3,log_GDP_per_capita_t_minus_2))
+```
+
+Dans cette deuxième partie, nous abordons l'analyse de la multicollinéarité dans nos données. Pour répondre aux objectifs pédagogiques de ce projet, nous introduisons plusieurs nouvelles variables dans notre modèle, ce qui entraîne l'évolution de notre modèle comme suit:
+
+
+$$ log.GDP.per.capita = b_0+b_1*FBCF+b_2*log.CO2.per.capita +b_3*log.GDP.per.capita_{t-1}+$$
+$$b_4*Trade + b_5*Trend + b_6*POP_g + b_7*Dth_rate +$$
+$$ b_8*Pop_65+b_9*HTan + b_{10}*UNPrate+ b_{11}*Hth.pc.gdp+ b_{11}*Bth_rate + e $$
+Avec en plus:
+
+**POP_g**: Taux de croissance de la pop annuelle en % de la population  
+
+**Dth_rate**:  Taux de mortalité par 1000 personnes 
+
+**Pop_65**: Population de 65 ans ou plus en % de population
+
+**Bth_rate**: Taux de natalité par 1000 personnes 
+
+**HT_an**: Heure moy de travail annuelle par personne employée
+
+**UNP_rate**: Taux de chômage en % de la population active 
+
+**Hth_pc_gdp**: Dépense dans la santé en % du PIB
+
+## Détection de la multicolinéarité
+
+Lorsque nous estimons les coefficients du modèle à l'aide de la méthode des moindres carrés ordinaires (MCO), nous présentons le modèle de la manière suivante :
+
+```{r}
+
+model2 <- lm(log_GDP_per_capita~., data=don2)
+summary(model2)
+```
+Nous observons un (R^2) élevé, mais les variables issues des théories économiques ne sont pas significatives. Nous en déduisons qu’il existe probablement un problème de multicolinéarité.
+
+Afin de confirmer nos soupçons concernant la présence de multicolinéarité dans le modèle, nous examinons le facteur d’inflation de la variance (VIF). Le VIF mesure de combien la variance d’un coefficient est augmentée en raison d’une relation linéaire avec les autres régresseurs.
+
+```{r}
+vif(model2)
+```
+
+
+
+La valeur au-dessus de laquelle nous considérons qu’il y a de la multicollinéarité n’est pas fixe. Nous prendrons donc 5 comme valeur de référence.
+
+Nous observons alors un VIF très élevé dans notre modèle pour les variables ajoutées. Cela suggère une forte multicollinéarité entre les variables explicatives. En d’autres termes, ces variables sont fortement corrélées les unes avec les autres, ce qui peut poser des problèmes lors de l’estimation des coefficients et de l’interprétation des résultats. Pour résoudre ce problème, nous allons réduire la dimension de notre modèle afin d’éliminer la multicolinéarité.
+
+
+## Méthodes de réduction de dimension
+
+### Regression sur Composantes Principales (PCR)
+
+Une synthèse des résultats de l'estimation par la méthode PCR nous donne :
+
+```{r ,echo=FALSE, message=FALSE, warning=FALSE, comment=NA }
+set.seed(500)
+# expliquer le nombre de faits en fonction des autres variables
+pcr_model_est <- pcr(log_GDP_per_capita~., data=don2, scale=TRUE, jackknife = TRUE,  validation="CV", ncomp=ncol(don2)-1)
+
+#scale= TRUE, variables centrées réduites
+# validation="CV" R utilise la validation croisée K-fold pour évaluer la performance du modèle (k=10 = par défaut)
+summary(pcr_model_est)
+```
+
+On constate ainsi que 99,14 % de la variance du PIB par habitant est expliquée par les 6 premières composantes, avec une variation minime par la suite.
+
+Les modèles comportant un nombre plus élevé de composantes risquent de souffrir de sur-ajustement, c'est-à-dire qu'ils peuvent devenir trop complexes pour les données disponibles, ce qui pourrait entraîner des prédictions moins précises sur de nouveaux ensembles de données. Il est donc préférable de choisir un modèle avec le moins de composantes possible tout en maximisant l'explication de notre variable d'intérêt. Cela nous conduit à rechercher le modèle présentant la plus petite erreur de validation croisée tout en restant moins complexe.
+
+Pour aller plus loin, nous examinons l'erreur quadratique moyenne pour chaque nombre potentiel de composantes principales incluses dans le modèle.
+
+```{r}
+validationplot(pcr_model_est, val.type = "MSEP", legendpos= "topright")
+```
+
+On remarque ainsi l'erreur diminue très faiblement à partir de la quatrième composante, voir reste presque inchangé dès la sixième composante. On peut donc déduire qu'on choisit le modèle avec **6 composantes**, qui a la meilleure performance avec une valeur de  0.03383 pour CV et 0.03348 pour adjCV.
+
+
+On estime alors les coefficients:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, comment=NA}
+#coefficients(pcr_model_est, ncomp=6)
+coefplot(pcr_model_est, ncomp=6, se.whiskers = TRUE, labels = prednames(pcr_model_est), cex.axis = 0.5)
+```
+
+
+Les coefficients pour les variables *Trade*, *Pop_g*, *Dth_rate*, *Bth_rate*, *HT_an*, *Hth_pc_gdp* et *UNP_rate* sont tous négatifs, ce qui suggère que des valeurs plus élevées de ces variables sont associées à des valeurs plus faibles du PIB par habitant chaque année. De même, les coefficients positifs pour la variable *Trend*, *FBCF*, *Pop_65*, *log_CO2_per_capita*, et *log_GDP_per_capita_t_minus_1* suggèrent une association positive avec la variable dépendante.
+
+Toutefois, ces coefficients ne reflètent pas l'effet direct de chaque variable sur le PIB par habitant.
+
+### Régression des Moindres Carrés Partiel (PLS)
+
+
+```{r ,echo=FALSE}
+set.seed(500)
+pls_model_est <- plsr(log_GDP_per_capita~., data=don2, scale=TRUE, jackknife = TRUE,validation="CV")
+summary(pls_model_est)
+```
+
+On peut observer que l'erreur diminue progressivement avec l'augmentation du nombre de composantes, mais le taux de décroissance ralentit à partir de 7 composantes. La meilleure performance est obtenue avec 9 composantes, où l'erreur de validation croisée est de 0.01512.
+
+
+Pour aller plus loin, nous examinons le R^2 pour chaque nombre potentiel de composantes principales incluses dans le modèle.
+
+```{r, echo=FALSE}
+plot(pls_model_est, "validation", val.type = "R2")
+```
+On peut ainsi remarquer qu'il est maximum et commence à rester constant dès la huitième composantes.
+
+On estime alors les coefficients:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#coefficients(pls_model_est, ncomp=9) 
+coefplot(pls_model_est, ncomp=9, se.whiskers = TRUE, labels = prednames(pls_model_est), cex.axis = 0.5)
+```
+
+En ce qui concerne l'interprétation des coefficients, chaque coefficient représente uniquement la relation entre la variable explicative et celle de réponse. Par exemple, un coefficient négatif pour la variable *Trade* indique une relation inverse entre cette variable et la variable de réponse, c'est-à-dire que dans le cadre du Japon,un taux d'ouverture commerciale élévé a tendance à réduire le PIB par habitant. De même, un coefficient positif pour la variable *FBCF* indique une relation directe entre cette variable et la variable de réponse, c'est-à-dire qu'un taux de Formation brute de capital fixe élévé a tendance à avoir une valeur plus élevée pour sur le PIB par habitant.
+
+
+## Méthodes pénalisées
+
+Les méthodes de pénalisation sont des techniques visant à régulariser notre modèle linéaire et à réduire le risque de surajustement (overfitting). Nous utilisons le package glmnet pour mettre en œuvre ces méthodes.
+
+### Création des bases apprentisage et test
+
+Nous construirons notre modèle sur les données d'entraînement et évaluerons ses performances sur les données de test. Notre échantillon d'apprentissage contient 50 % des données, tandis que l'échantillon de test contient les 50 % restants.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+set.seed(500)
+
+# séparation des données
+
+train.samples <- don2[sample(nrow(don2)), ]
+train.data <- train.samples[1:26, ]
+test.data <-  train.samples[27:52, ]
+```
+
+### Régression Ridge
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+set.seed(500)
+
+lambda <- 10^seq(-3, 3, length = 100)
+
+ridge.model <- train(
+  log_GDP_per_capita ~., data = na.omit(train.data), method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(.alpha = 0, .lambda = lambda)
+  )
+
+plot(ridge.model)
+#ridge.model$bestTune$lambda
+```
+
+On constate ainsi que la valeur du meilleur paramètre lambda, qui minimise l'erreur quadratique moyenne estimée par validation croisée, est **0.02477076**.
+
+On présente également l'importance des variables, et on a:
+
+```{r}
+plot(varImp(ridge.model))
+```
+
+Ainsi, on peut constater que dans le contexte du Japon, le PIB par habitant est principalement expliqué par le PIB par habitant décalé d'un an, les émissions de CO2 par habitant et le taux de croissance de la population.
+
+Cette observation est complétée par l'estimation du meilleur modèle, qui est le suivant :
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+bestlambda <- ridge.model$bestTune$lambda
+
+#vérifie si c'est le train qui contient la valeur manquanre
+#sum(is.na(train.data))
+
+indice_NA <- which(is.na(train.data$log_GDP_per_capita_t_minus_1))
+x <- model.matrix(log_GDP_per_capita ~ .,na.omit(train.data))[,-1]
+y <- train.data$log_GDP_per_capita[-indice_NA]
+
+best_ridge <- glmnet(x, y, alpha = 0, lambda = bestlambda)
+coefficients(best_ridge)
+
+```
+
+On conclut ici qu'un coefficient négatif indique une *relation inverse* avec la variable dépendante, tandis qu'un coefficient positif indique une *relation directe* avec la variable dépendante. Plus la valeur absolue d'un coefficient est élevée, plus grande est l'importance de la variable correspondante pour la prédiction de la variable dépendante, un constat conforme à l'analyse précédente.
+
+On remarque que, en raison de l'utilisation de la régularisation dans le modèle de Ridge, certains de nos coefficients sont très petits (*POP_g* et *HT_an*) par rapport aux autres. Cela est dû à la pénalisation de la magnitude des coefficients, qui est utilisée pour éviter le **surajustement** et améliorer le modèle.
+
+
+```{r , echo=FALSE}
+# Performance du modèle
+predictions <- ridge.model %>% predict(test.data)
+data.frame(
+  RMSE = RMSE(predictions, test.data$log_GDP_per_capita),
+  Rsquare = R2(predictions, test.data$log_GDP_per_capita)
+)
+```
+
+Le coefficient de détermination (R-carré) s'élève à 0.9842132, avec une erreur de prévision de 0.03116389. Cela signifie que le meilleur modèle a pu expliquer 98,4 % de la variation des valeurs de réponse des données d'entraînement, avec seulement 3 % de chance d'erreur.
+
+
+## Régression Lasso
+
+```{r lasso, echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(500)
+
+lambda <- 10^seq(-3, 3, length = 100)
+
+lasso.model <- train(
+  log_GDP_per_capita ~., data = na.omit(train.data), method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(.alpha = 1, .lambda = lambda)
+  )
+
+plot(lasso.model)
+#lasso.model$bestTune
+
+```
+
+On constate que la valeur du paramètre lambda qui minimise l'erreur quadratique moyenne estimée par validation croisée est **0.00231013**.
+
+```{r, echo=FALSE}
+bestlambda.lasso <- lasso.model$bestTune$lambda
+
+#vérifie si c'est le train qui contient la valeur manquante
+#sum(is.na(train.data))
+
+indice_NA <- which(is.na(train.data$log_GDP_per_capita_t_minus_1))
+
+x <- model.matrix(log_GDP_per_capita ~ .,na.omit(train.data))[,-1]
+y <- train.data$log_GDP_per_capita[-indice_NA]
+
+best_lasso <- glmnet(x, y, alpha = 1, lambda = bestlambda.lasso)
+coefficients(best_lasso)
+
+```
+
+
+On remarque qu'avec l'utilisation d'une régression de Lasso Hitters, connu aussi pour sélectionner les variables pertinentes pour le modèle, certains de nos coefficients sont très petits (*Trade*) par rapport à d'autres. Les variables *FTrend*, *FBCF*,*POP_g *,*Dth_rate*,*Pop_65*,*HT_an*,*UNP_rate* et *Hth_pc_gdp*, a quant à elles, ont été retirée du modèle. Cela est dû à la pénalisation de la magnitude des coefficients qui est utilisée pour éviter le **surajustement** et améliorer le modèle.
+
+
+```{r , echo=FALSE}
+# Performance du modèle
+predictions <- lasso.model %>% predict(test.data)
+data.frame(
+  RMSE = RMSE(predictions, test.data$log_GDP_per_capita),
+  Rsquare = R2(predictions, test.data$log_GDP_per_capita)
+)
+```
+
+Le coefficient de détermination (R-carré) s'élève à 0.9946675, avec une erreur de prévision de 0.01920281. Cela indique que le PIB par habitant au Japon, dans le cadre de notre étude, peut s'expliquer uniquement par l'ouverture commerciale (**Trade**), le taux de natalité (*Bth_rate*), le CO2 par habitant (*log_CO2_per_capita*) et le PIB par habitant décalé d'une année.
+
+
+## Régression Elastic Net
+
+La régression Elastic Net combine deux formes de pénalisation précédente, Ridge et Lasso.
+
+```{r , include=FALSE}
+elastic.model <- train(
+  log_GDP_per_capita ~., data = na.omit(train.data), method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10
+  )
+
+elastic.model$bestTune
+```
+
+On remarque que les meilleurs alpha et lambda estimés sur les données d'entrainement sont respectivemets égaux à 0.2 et 0.000744449. 
+
+
+```{r,echo=FALSE, warning=FALSE}
+coef(elastic.model$finalModel, elastic.model$bestTune$lambda)
+```
+
+Avec l'application d'une régression Elastic Net, toutes les variables sont conservées dans le modèle final. Cependant, les variables *Trade*, *HT_an* et *FBCF* ont des coefficients plus petits que les autres variables. 
+
+
+```{r , echo=FALSE}
+# Make predictions
+predictions <- elastic.model %>% predict(test.data)
+
+# Model prediction performance
+data.frame(
+  RMSE = RMSE(predictions, test.data$log_GDP_per_capita),
+  Rsquare = R2(predictions, test.data$log_GDP_per_capita)
+)
+
+```
+
+Le R-carré vaut 0.9973782. Donc le meilleur modèle a été en mesure d'expliquer 99,73782 % de la variation des valeurs de réponse des données d'entraînement.
+
+
+## Comparaison des resultats 
+
+Afin de sélectionner le meilleur modèle nous étudions le tableau récapitulatif suivant :
+
+```{r}
+
+models <- list(
+  ridge = ridge.model,
+  lasso = lasso.model,
+  elastic = elastic.model
+)
+resamples(models) %>% summary( metric = "RMSE")
+```
+
+
+D’après les différents indicateurs, la régression Elastic Net semble être la meilleure option, car elle minimise la plage de valeurs de la RMSE, quel que soit le paramétrage. En conséquence, le modèle final retenu est celui généré par la régression Elastic Net
+
+\newpage
+
+# Partie 3: Causalité et double machine learning
+
+## Mise à jour de la base et estimation par double machine learning simple
+
+Afin de mettre en oeuvre cette partie, on introduit dans nos données une variables relatif à l'année 2008, afin d'évaluer  les effets de la crise économique de 2008 sur le PIB par habitant au JAPON.Cet effet, mesurer par une variable qu'on appelle ici **dummy_2008**, prendra pour valeur 1 après 2008 et 0 avant.
+
+```{r, echo=FALSE, warning=FALSE}
+data$dummy_2008 <- ifelse(data$Year > 2008,1,0)
+
+new_data= subset(na.omit(data), select=-c(Year, log_GDP_per_capita_t_minus_2, log_GDP_per_capita_t_minus_3))
+
+new_data <- as.data.table(new_data)
+
+```
+
+Ensuite, nous estimons les paramètres à l'aide de la méthode Lasso avec glmnet. Le paramètre de pénalité lambda est sélectionné via une validation croisée.
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(500)
+doubleml_data1 = double_ml_data_from_data_frame(new_data,
+y_col = "log_GDP_per_capita",
+d_cols = c("dummy_2008"))
+
+ml_l1 = lrn("regr.cv_glmnet", s = "lambda.min")
+ml_m1 = lrn("regr.cv_glmnet", s = "lambda.min")
+doubleml1_plr = DoubleMLPLR$new(doubleml_data1, ml_l1, ml_m1)
+
+doubleml1_plr$fit()
+doubleml1_plr$summary()
+
+```
+
+Ainsi, le coefficient associé à la variable **dummy_2008** ne semble pas significatif. Pour renforcer notre conclusion, nous allons estimer l'intervalle de confiance et les estimations par bootstrap.
+
+## Estimation par double machine learning avec bootstrapping 
+
+```{r}
+doubleml1_plr$bootstrap(method = "normal", n_rep_boot = 1000)
+#doubleml1_plr$boot_coef
+#doubleml1plr$boot_t_stat
+
+# Pour construire un intervalle de confiance simultané, nous définissons l'option joint = TRUE lors de l'appel de la méthode confint()
+
+doubleml1_plr$confint(joint = TRUE)
+```
+
+On conclut alors l'intervalle de confiance pour *dummy_2008* inclut zéro, cela indique que le coefficient pour cette variable n'est pas significatif.
+
+On applique ensuite une *correction des p-values* selon deux méthodes, utiles car permet de réduire le risque de fausse découverte. En effet, lorsque plusieurs tests d'hypothèses sont effectués simultanément, le risque d'observer au moins une fausse découverte augmente. La correction des valeurs p vise à ajuster ces valeurs en fonction du nombre de tests effectués, afin de maintenir un niveau global de significativité approprié.
+
+
+```{r}
+#correction des valeurs p d'un test d'hypothèses jointes
+doubleml1_plr$p_adjust(method = "romano-wolf")
+doubleml1_plr$p_adjust(method = "bonferroni")
+```
+
+
+Ainsi, quelle que soit la méthode utilisée, la variable *dummy_2008* n'est pas significative, et on en déduit que la crise économique de 2008 n'a pas eu d'effet sur le PIB par habitant au Japon à long terme.
+
+
+
+\newpage
+
+# Conclusion
+
+Pour conclure, dans cette étude sur le PIB par habitant au JAPON, nous avons d’abord analysé notre base de données de manière univariée et bivariée pour orienter au mieux la suite de notre réflexion. Ensuite, nous avons sélectionné notre modèle économétrique fondé sur des théories économiques. Après avoir testé l'absence d'autocorrélation dans nos données, ainsi qu'un test d'endogénéité, la présence d'endogénéité nous a amenés à décider d'appliquer l'estimateur des variables instrumentales.
+
+Dans le cadre pédagogique de ce projet, nous avons introduit plusieurs autres variables dans notre modèle, puis étudié la multicolinéarité. Pour cela, nous avons appliqué des méthodes de réduction de dimension et de pénalisation. Parmi celles-ci, le modèle optimal est celui proposé par *elastic net*. Ce modèle est défini par :
+
+
+$$ log.GDP.per.capita = 3.16 + 0.00088*FBCF + 0.197*log.CO2.per.capita + 0.593*log.GDP.per.capita_{t-1}+$$
+$$-0.00129*Trade +  0.0035*Trend +  -0.0404*POP_g + 0.016*Dth_rate +$$
+$$ 0.00338*Pop_65 + 0.00034*HTan + 0.00649*UNPrate+ -0.017*Hth.pc.gdp+  -0.020*Bth_rate + e $$
+
+Enfin, nous avons examiné l'impact de la crise économique de 2008 sur le PIB par habitant au JAPON en utilisant une estimation par le Double Machine Learning. Nos résultats indiquent que cette crise n'a eu aucun effet significatif sur le PIB par habitant au JAPON, ou en d'autres termes, nous ne pouvons pas conclure que cette crise a eu des effets à long terme sur le PIB par habitant au JAPON.
+
+
+\newpage
+
+# Bibliographie
+
+**Données**:
+
+- [OCDE](https://data.oecd.org/)
+
+- [World bank data](https://data.worldbank.org/)
+
+**Références:**
+
+- Isabelle Cadoret, **Econométrie avancée : causalité, Lasso, Ridge**, Mastère Mathématiques Appliquées Statistique, Université de Rennes.
+
+- Gareth James, & Daniela Witten, &Trevor Hastie, & Robert Tibshirani, **An Introduction to Statistical
+Learning with Applications in R**
+
+\newpage
+
+# Contribution au projet 
+
+**Marc TANO** : Tout le projet, à l'exception des méthodes de réduction de dimension PLS.
+
+**Gyldano Dadjedji** : Tout le projet, sauf pour les méthodes pénalisées ridge.
+
+**Kwami Nouchet** : Tout le projet, excluant les méthodes pénalisées elastic net.
